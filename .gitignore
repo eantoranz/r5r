@@ -4,4 +4,4 @@
 *.o
 [Mm]odule*
 .tmp_versions
-.*.swp
+.*.sw?
