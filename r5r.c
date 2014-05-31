@@ -3,6 +3,7 @@
  *
  * (C) 2003 Eklektix, Inc.
  * (C) 2010 Pat Patterson <pat at superpat dot com>
+ * (c) 2014 Edmundo Carmona Antoranz
  * Redistributable under the terms of the GNU GPL.
  */
 
@@ -22,12 +23,14 @@
 MODULE_LICENSE("Dual BSD/GPL");
 static char *Version = "1.4";
 
+
+// file that we open to map to our file
+static struct file * deviceFile;
+
 static int major_num = 0;
 module_param(major_num, int, 0);
 static int logical_block_size = 512;
 module_param(logical_block_size, int, 0);
-static int nsectors = 1024; /* How big the drive is */
-module_param(nsectors, int, 0);
 
 /*
  * We can tweak our hardware sector size, but the kernel talks to us
@@ -46,7 +49,6 @@ static struct request_queue *Queue;
 static struct r5r_device {
 	unsigned long size;
 	spinlock_t lock;
-	u8 *data;
 	struct gendisk *gd;
 } Device;
 
@@ -55,17 +57,23 @@ static struct r5r_device {
  */
 static void r5r_transfer(struct r5r_device *dev, sector_t sector,
 		unsigned long nsect, char *buffer, int write) {
-	unsigned long offset = sector * logical_block_size;
+	loff_t offset = sector * logical_block_size;
 	unsigned long nbytes = nsect * logical_block_size;
 
 	if ((offset + nbytes) > dev->size) {
 		printk (KERN_NOTICE "r5r: Beyond-end write (%ld %ld)\n", offset, nbytes);
 		return;
 	}
-	if (write)
-		memcpy(dev->data + offset, buffer, nbytes);
-	else
-		memcpy(buffer, dev->data + offset, nbytes);
+	if (!write) {
+		printk(KERN_DEBUG "r5r: seeking to %ld\n", offset);
+
+		// reading from file
+		mm_segment_t oldfs = get_fs();
+		set_fs(KERNEL_DS);
+		vfs_read(deviceFile, buffer, nbytes, &offset);
+		set_fs(oldfs);
+
+	}
 }
 
 static void r5r_request(struct request_queue *q) {
@@ -112,14 +120,20 @@ static struct block_device_operations r5r_ops = {
 };
 
 static int __init r5r_init(void) {
+	// we open the file... if it doesn't open, there's nothing else we need to do
+	deviceFile = filp_open("/home/debian/r5r.txt", O_RDONLY | O_LARGEFILE, 0);
+	if (IS_ERR(deviceFile))
+		return -EFAULT;
+	printk(KERN_INFO "r5r: file successfully opened\n");
+	unsigned long fileSize = i_size_read(deviceFile->f_dentry->d_inode);
 	/*
 	 * Set up our internal device.
 	 */
-	Device.size = nsectors * logical_block_size;
+	Device.size = fileSize;
 	spin_lock_init(&Device.lock);
-	Device.data = vmalloc(Device.size);
+	/*Device.data = vmalloc(Device.size);
 	if (Device.data == NULL)
-		return -ENOMEM;
+		return -ENOMEM;*/
 	/*
 	 * Get a request queue.
 	 */
@@ -146,43 +160,15 @@ static int __init r5r_init(void) {
 	Device.gd->fops = &r5r_ops;
 	Device.gd->private_data = &Device;
 	strcpy(Device.gd->disk_name, "r5r0");
-	set_capacity(Device.gd, nsectors);
+	set_capacity(Device.gd, Device.size / logical_block_size); 
 	Device.gd->queue = Queue;
 	add_disk(Device.gd);
-
-        mm_segment_t oldfs = get_fs();
-        set_fs(KERNEL_DS);
-
-	struct file * theFile = filp_open("/home/debian/r5r.txt", O_RDONLY | O_LARGEFILE, 0);
-	if (!IS_ERR(theFile)) {
-		printk(KERN_INFO "File opened without problems\n");
-		int fileSize = i_size_read(theFile->f_dentry->d_inode);
-		printk(KERN_INFO "Size: %d bytes\n", fileSize);
-		char content[fileSize];
-		loff_t offset;
-		offset = 0;
-		int ret;
-		ret = vfs_read(theFile, content, fileSize, &offset);
-		printk(KERN_INFO "r5r, ret: %d offset %d\n", ret, offset);
-		if (ret >= 0) {
-			int i;
-			for (i = 0; i < fileSize; i++) {
-				printk(KERN_INFO "%d (%c)\n", content[i], content[i]);
-			}
-		}
-		filp_close(theFile, NULL);
-	} else {
-		printk(KERN_INFO "Couldn't open file\n");
-	}
-
-	set_fs(oldfs);
 
 	return 0;
 
 out_unregister:
 	unregister_blkdev(major_num, "r5r");
 out:
-	vfree(Device.data);
 	return -ENOMEM;
 }
 
@@ -192,7 +178,11 @@ static void __exit r5r_exit(void)
 	put_disk(Device.gd);
 	unregister_blkdev(major_num, "r5r");
 	blk_cleanup_queue(Queue);
-	vfree(Device.data);
+	if (!IS_ERR(deviceFile)) {
+		printk(KERN_INFO "r5r: closing file\n");
+		filp_close(deviceFile, 0);
+		printk(KERN_INFO "r5r: file closed successfully\n");
+	}
 }
 
 module_init(r5r_init);
