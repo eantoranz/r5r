@@ -1,4 +1,4 @@
-obj-m := sbd.o
+obj-m := r5r.o
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 default:
