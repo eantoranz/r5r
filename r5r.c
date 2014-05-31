@@ -18,6 +18,12 @@
 #include <linux/genhd.h>
 #include <linux/blkdev.h>
 #include <linux/hdreg.h>
+#include <linux/fs.h>
+#include <asm/segment.h>
+#include <asm/uaccess.h>
+#include <linux/buffer_head.h>
+#include <linux/fcntl.h>
+#include <linux/syscalls.h>
 
 MODULE_LICENSE("Dual BSD/GPL");
 static char *Version = "1.4";
@@ -149,6 +155,33 @@ static int __init r5r_init(void) {
 	set_capacity(Device.gd, nsectors);
 	Device.gd->queue = Queue;
 	add_disk(Device.gd);
+
+        //mm_segment_t oldfs = get_fs();
+        //set_fs(KERNEL_DS);
+
+	struct file * theFile = filp_open("/home/debian/r5r.txt", O_RDONLY | O_LARGEFILE, 0);
+	if (!IS_ERR(theFile)) {
+		printk(KERN_INFO "Se pudo abrir el archivo sin problemas\n");
+		int fileSize = i_size_read(theFile->f_dentry->d_inode);
+		printk(KERN_INFO "Size: %d bytes\n", fileSize);
+		unsigned char content[fileSize];
+		int offset;
+		offset = 0;
+		int ret;
+		ret = vfs_read(theFile, &content, fileSize, &offset);
+		printk(KERN_INFO "r5r, ret: %d offset %d\n", ret, offset);
+		if (!IS_ERR(ret)) {
+			int i;
+			for (i = 0; i < fileSize; i++) {
+				printk(KERN_INFO "%d (%c)\n", content[i], content[i]);
+			}
+		}
+		filp_close(theFile, NULL);
+	} else {
+		printk(KERN_INFO "No se pudo abrir el archivo\n");
+	}
+
+	//set_fs(oldfs);
 
 	return 0;
 
